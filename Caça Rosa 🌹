@@ -1,0 +1,226 @@
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import matplotlib.dates as mdates
+from matplotlib.patches import Rectangle
+import mplfinance as mpf
+import tkinter as tk
+from tkinter import ttk
+import sqlite3
+from datetime import datetime, timedelta
+from selenium import webdriver
+from selenium.webdriver.firefox.service import Service
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from webdriver_manager.firefox import GeckoDriverManager
+import time
+import threading
+
+# ------------------- INÍCIO: LÓGICA CRMA E AJUSTE DE CASHOUT -------------------
+
+CRMA_PATTERNS = ["RXR", "ROXR", "ROXOR", "ROOXXOOR", "AR", "AXR", "AOXR", "AOXOR", "AOOXXOOR"]
+
+CASH_OUTS = {
+    "RXR": [2.0, 3.0],
+    "ROXR": [2.2, 3.2],
+    "ROXOR": [2.5, 3.5],
+    "ROOXXOOR": [3.0, 4.0],
+    "AR": [1.8, 2.8],
+    "AXR": [2.0, 3.0],
+    "AOXR": [2.2, 3.2],
+    "AOXOR": [2.5, 3.5],
+    "AOOXXOOR": [3.0, 4.0],
+    "5th_house": [1.49, 1.9]
+}
+
+def map_history_to_pattern(history, pattern_len):
+    """Mapeia os últimos valores do histórico para letras conforme as regras."""
+    rec = []
+    for x in history[-pattern_len:]:
+        if x >= 10.0:
+            rec.append("A")
+        elif x >= 2.0:
+            rec.append("R")
+        else:
+            rec.append("X")
+    return "".join(rec)
+
+def check_pattern_similarity(history, pattern):
+    """Retorna True se o histórico recente corresponde ao padrão (>=50% de acerto)."""
+    pattern_len = len(pattern)
+    if len(history) < pattern_len:
+        return False
+    history_pattern = map_history_to_pattern(history, pattern_len)
+    matches = sum(1 for h, p in zip(history_pattern, pattern) if h == p)
+    return (matches / pattern_len) >= 0.5
+
+def ajustar_cashout_automatico(cashout1, cashout2):
+    try:
+        # 1ª aposta
+        auto_button_1 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_button_1))
+        )
+        auto_button_1.click()
+        auto_switch_1 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_switch_1))
+        )
+        driver.execute_script("arguments[0].click();", auto_switch_1)
+        auto_input_1 = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, auto_cashout_input_1))
+        )
+        auto_input_1.send_keys(Keys.CONTROL + "a")
+        auto_input_1.send_keys(Keys.DELETE)
+        auto_input_1.send_keys(str(cashout1))
+        # 2ª aposta
+        auto_button_2 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_button_2))
+        )
+        driver.execute_script("arguments[0].click();", auto_button_2)
+        auto_switch_2 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_switch_2))
+        )
+        driver.execute_script("arguments[0].click();", auto_switch_2)
+        auto_input_2 = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, auto_cashout_input_2))
+        )
+        auto_input_2.send_keys(Keys.CONTROL + "a")
+        auto_input_2.send_keys(Keys.DELETE)
+        auto_input_2.send_keys(str(cashout2))
+        print(f"Cashouts ajustados: {cashout1} e {cashout2}")
+    except Exception as e:
+        print(f"Erro ao ajustar cashouts: {e}")
+
+# ------------------- FIM: LÓGICA CRMA E AJUSTE DE CASHOUT -------------------
+
+# ... RESTANTE DO SEU CÓDIGO INALTERADO ATÉ A FUNÇÃO estrategia_principal() ...
+
+# Substitua apenas a função estrategia_principal por esta versão:
+
+def estrategia_principal():
+    global casas_passadas, detectou_rosa, ultima_vela_rosa, martingale_count_1, martingale_count_2, ultimo_resultado, vitorias, derrotas, lucro_acumulado, perdas_acumuladas, saldo, rodadas, rodadas_apos_rosa
+
+    configurar_cashout_automatico()
+    padrao_ativo = None
+    casas_em_padrao = 0
+
+    while True:
+        historico = pegar_historico_real()
+        if not historico or len(historico) < 5:
+            print("⚠️ Histórico insuficiente ou não capturado")
+            time.sleep(2)
+            continue
+        print(f"📈 Histórico atual: {historico}")
+        rodadas = historico
+
+        # 1. Se houver um padrão CRMA ativo, continue seguindo enquanto ele corresponder
+        if padrao_ativo:
+            if check_pattern_similarity(rodadas, padrao_ativo):
+                cashouts = CASH_OUTS.get(padrao_ativo, CASH_OUTS["5th_house"])
+                ajustar_cashout_automatico(*cashouts)
+                print(f"🔎 Padrão CRMA em andamento '{padrao_ativo}'. Continuando caçada. Cashouts: {cashouts}")
+                casas_em_padrao += 1
+                # Aqui você pode chamar sua lógica de aposta padrão, se desejar.
+            else:
+                print(f"⚠️ Padrão CRMA '{padrao_ativo}' QUEBROU antes do Rosa. Voltando a aguardar Rosa para ativar 5ª casa.")
+                padrao_ativo = None
+                casas_em_padrao = 0
+
+        # 2. Se não há padrão ativo, e estamos na 5ª casa após Rosa, verifique os padrões CRMA antes de apostar
+        if not padrao_ativo and detectou_rosa and casas_passadas == 4:
+            padrao_encontrado = None
+            for padrao in CRMA_PATTERNS:
+                if check_pattern_similarity(rodadas, padrao):
+                    padrao_encontrado = padrao
+                    break
+            if padrao_encontrado:
+                padrao_ativo = padrao_encontrado
+                casas_em_padrao = 1
+                cashouts = CASH_OUTS[padrao_encontrado]
+                ajustar_cashout_automatico(*cashouts)
+                print(f"🔎 Novo padrão CRMA detectado '{padrao_encontrado}'. Iniciando caça ao padrão. Cashouts: {cashouts}")
+                # Aqui você pode chamar sua lógica de aposta padrão, se desejar.
+            else:
+                # Nenhum padrão, segue normalmente para 5ª casa após Rosa
+                cashouts = CASH_OUTS["5th_house"]
+                ajustar_cashout_automatico(*cashouts)
+                print("🔎 Nenhum padrão CRMA detectado. Usando cashouts padrão da 5ª casa.")
+                # --- BLOCO DA 5ª CASA ORIGINAL ABAIXO ---
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                total_perda = 0.0
+                try:
+                    saldo_clean = saldo.replace('Kz', '').replace('AOA', '').replace(',', '.').strip()
+                    saldo_float = float(saldo_clean)
+                except:
+                    saldo_float = 0.0
+                aposta1 = None
+                aposta2 = None
+                if martingale_count_1 < limite_martingale:
+                    aposta1 = apostar_com_base_na_banca(martingale_count_1, 1)
+                if martingale_count_2 < limite_martingale:
+                    aposta2 = apostar_com_base_na_banca(martingale_count_2, 2)
+                if aposta1 is not None and aposta2 is not None:
+                    print(f"🎯 {casas_passadas + 1}ª casa chegou! Fazendo entradas simultâneas...")
+
+                    threads = []
+                    t1 = threading.Thread(target=lambda: clicar_botao(botao1_xpath))
+                    t2 = threading.Thread(target=lambda: clicar_botao(botao2_xpath))
+                    threads.append(t1)
+                    threads.append(t2)
+                    t1.start()
+                    t2.start()
+                    for t in threads:
+                        t.join()
+                    time.sleep(5)
+                    resultado1, multiplicador1 = verificar_resultado(aposta1, 1.49)
+                    resultado2, multiplicador2 = verificar_resultado(aposta2, 1.90)
+                    if aposta1 is not None:
+                        if resultado1:
+                            vitorias += 1
+                            lucro = aposta1 * (1.49 - 1)
+                            lucro_acumulado += lucro
+                            ultimo_resultado = f"Vitória (+Kz {lucro:.2f})"
+                            print(f"🏆 Vitória na 1ª aposta! Lucro: Kz {lucro:.2f}.")
+                            salvar_entrada(aposta1, martingale_count_1, "Vitória", lucro, multiplicador1)
+                            martingale_count_1 = limite_martingale
+                        else:
+                            total_perda += aposta1
+                            historico_martingale.append(f"1ª aposta (tentativa {martingale_count_1 + 1}): Falha - Kz {aposta1:.2f}")
+                            print(f"⚡ 1ª aposta falhou (tentativa {martingale_count_1 + 1}).")
+                            martingale_count_1 += 1
+                    if aposta2 is not None:
+                        if resultado2:
+                            vitorias += 1
+                            lucro = aposta2 * (1.90 - 1)
+                            lucro_acumulado += lucro
+                            ultimo_resultado = f"Vitória (+Kz {lucro:.2f})"
+                            print(f"🏆 Vitória na 2ª aposta! Lucro: Kz {lucro:.2f}.")
+                            salvar_entrada(aposta2, martingale_count_2, "Vitória", lucro, multiplicador2)
+                            martingale_count_2 = limite_martingale
+                        else:
+                            total_perda += aposta2
+                            historico_martingale.append(f"2ª aposta (tentativa {martingale_count_2 + 1}): Falha - Kz {aposta2:.2f}")
+                            print(f"⚡ 2ª aposta falhou (tentativa {martingale_count_2 + 1}).")
+                            martingale_count_2 += 1
+                    if martingale_count_1 >= limite_martingale and martingale_count_2 >= limite_martingale:
+                        if total_perda > 0 and not (resultado1 and resultado2):
+                            derrotas += 1
+                            perdas_acumuladas += total_perda
+                            ultimo_resultado = f"Derrota (-Kz {total_perda:.2f})"
+                            print(f"💀 Derrota nas apostas após todas as tentativas de MG. Perda total: Kz {total_perda:.2f}.")
+                            mt_ref = max(martingale_count_1, martingale_count_2)
+                            mult_ref = max(multiplicador1, multiplicador2) if multiplicador1 > 0 or multiplicador2 > 0 else 0
+                            salvar_entrada(max(aposta1, aposta2) if aposta1 or aposta2 else 0, mt_ref, "Derrota", -total_perda, mult_ref)
+                        resetar_estrategia()
+                        apostar_com_base_na_banca(0, 1)
+                        apostar_com_base_na_banca(0, 2)
+                        continue
+
+        time.sleep(1)
+
+# ... RESTANTE DO SEU CÓDIGO SEGUIDO NORMALMENTE ...
