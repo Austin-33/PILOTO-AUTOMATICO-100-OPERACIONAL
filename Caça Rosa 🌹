@@ -822,11 +822,6 @@ canvas_rodadas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 rodadas_frame = ttk.Frame(canvas_rodadas)
 canvas_rodadas.create_window((0, 0), window=rodadas_frame, anchor="nw")
 
-for i in range(200):
-    rodadas_frame.grid_rowconfigure(i, weight=1)
-for j in range(6):
-    rodadas_frame.grid_columnconfigure(j, weight=1)
-
 rodadas_labels = []
 for row in range(200):
     row_labels = []
@@ -846,6 +841,23 @@ for row in range(200):
         row_labels.append(label)
     rodadas_labels.append(row_labels)
 
+def get_color(multiplicador):
+    if multiplicador >= 10.0:
+        return "#FF69B4"  # Rosa
+    elif multiplicador >= 2.0:
+        return "#800080"  # Roxo
+    else:
+        return "#87CEEB"  # Azul claro
+
+for row in range(200):
+    for col in range(6):
+        idx = row * 6 + col
+        if idx < len(rodadas):
+            multiplicador = rodadas[idx]
+            rodadas_labels[row][col].config(text=f"{multiplicador:.2f}x", bg=get_color(multiplicador), fg="white")
+        else:
+            rodadas_labels[row][col].config(text="N/A", bg="#2e2e2e", fg="white")
+
 def on_rodadas_frame_configure(event):
     canvas_rodadas.configure(scrollregion=canvas_rodadas.bbox("all"))
 
@@ -862,6 +874,31 @@ canvas_rodadas.bind_all("<MouseWheel>", on_rodadas_mouse_scroll)
 historico_frame = ttk.Frame(main_pane)
 main_pane.add(historico_frame, weight=1)
 tk.Label(historico_frame, text="Histórico de Entradas", font=("Arial", 12, "bold"), fg="white", bg="#1e1e1e").pack(fill=tk.X)
+
+def salvar_para_excel(rodada):
+    """
+    Saves a single rodada (round multiplier) to an Excel file for further analysis.
+
+    Parameters:
+    import os
+    file_path = "historico_extraido.xlsx"
+    file_exists = os.path.exists(file_path)
+    df.to_excel(file_path, mode='a', index=False, header=not file_exists)
+    """
+    # Adicione a lógica de anexar no arquivo Excel desejado
+    # Exemplo: adicionar uma linha em "historico_extraido.xlsx"
+    import pandas as pd
+    df = pd.DataFrame([[rodada]], columns=["Multiplicador"])
+    df.to_excel("historico_extraido.xlsx", mode='a', index=False, header=False)
+
+from collections import deque
+rodadas = deque(maxlen=600)
+
+def adicionar_rodada(nova_rodada):
+    if len(rodadas) == rodadas.maxlen:
+        rodada_removida = rodadas[0]
+        salvar_para_excel(rodada_removida)
+    rodadas.append(nova_rodada)
 
 colunas = ("Timestamp", "Bet Amount", "Martingale Level", "Outcome", "Profit/Loss", "Multiplicador")
 tree = ttk.Treeview(historico_frame, columns=colunas, show="headings", height=10)
@@ -1234,26 +1271,30 @@ def rodada_terminou():
     except:
         return False
 
-def adicionar_rodada(numero):
-    global rodadas, rodadas_apos_rosa, ultimo_multiplicador_processado, casas_passadas, detectou_rosa, ultima_vela_rosa
-    rodadas.insert(0, numero)
-    if len(rodadas) > 1200:
-        rodadas.pop(-1)
+MAX_CELULAS = 600
+rodadas = []  # Sua lista global
 
-    if numero >= 10.0:
-        print(f"🔥 Nova vela rosa detectada na 1ª posição: {numero:.2f}x! Reiniciando contagem...")
-        ultima_vela_rosa = numero
+def adicionar_rodada(nova_rodada):
+    global rodadas
+    rodadas.append(nova_rodada)
+    if len(rodadas) > MAX_CELULAS:
+        rodada_removida = rodadas.pop(0)  # Remove a primeira (mais antiga)
+        #salvar_para_excel(rodada_removida)  # Função que trata o envio para Excel/análise
+
+    if nova_rodada >= 10.0:
+        print(f"🔥 Nova vela rosa detectada na 1ª posição: {nova_rodada:.2f}x! Reiniciando contagem...")
+        ultima_vela_rosa = nova_rodada
         detectou_rosa = True
         casas_passadas = 0
         rodadas_apos_rosa = []
         historico_martingale = []
     elif detectou_rosa:
-        rodadas_apos_rosa.append(numero)
+        rodadas_apos_rosa.append(nova_rodada)
         casas_passadas = len(rodadas_apos_rosa)
-        print(f"⏳ {casas_passadas} nova(s) vela(s) após rosa ({ultima_vela_rosa:.2f}x): {numero:.2f}x")
+        print(f"⏳ {casas_passadas} nova(s) vela(s) após rosa ({ultima_vela_rosa:.2f}x): {nova_rodada:.2f}x")
 
-    ultimo_multiplicador_processado = numero
-    salvar_rodada(numero)
+    ultimo_multiplicador_processado = nova_rodada
+    salvar_rodada(nova_rodada)
     atualizar_extrator_rodadas()
     if len(rodadas) >= 5 and len(rodadas) % 5 == 0:
         mostrar_grafico_detetive(chart_frame, rodadas)
