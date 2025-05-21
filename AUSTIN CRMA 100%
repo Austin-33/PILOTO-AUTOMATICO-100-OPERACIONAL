@@ -1,0 +1,1396 @@
+
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import matplotlib.dates as mdates
+from matplotlib.patches import Rectangle
+import mplfinance as mpf
+import tkinter as tk
+from tkinter import ttk
+import sqlite3
+from datetime import datetime, timedelta
+from selenium import webdriver
+from selenium.webdriver.firefox.service import Service
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from webdriver_manager.firefox import GeckoDriverManager
+import time
+import threading
+
+# ------------------- INÍCIO: LÓGICA CRMA E AJUSTE DE CASHOUT -------------------
+
+CRMA_PATTERNS = ["RXR", "ROXR", "ROXOR", "ROOXXOOR", "AR", "AXR", "AOXR","AXXR", "AOXOR", "AOOXXOOR"]
+
+padroes_ema = [
+    "RXR",
+    "ROXR",
+    "ROXOR",
+    "ROOXXOOR",
+    "RXXR"          # NOVO PADRÃO!
+]
+
+# Definição dos cashouts para cada padrão CRMA e para a 5ª casa padrão
+CASH_OUTS = {
+    "AXXR": (5.0, 9.0),
+    "RXR": (5.0, 9.0),
+    "ROXR": (5.0, 9.0),
+    "ROXOR": (5.0, 9.0),
+    "ROOXXOOR": (5.0, 9.0),
+    "AR": (5.0, 9.0),
+    "AXR": (5.0, 9.0),
+    "AOXR": (5.0, 9.0),
+    "AOXOR": (5.0, 9.0),
+    "AOOXXOOR": (5.0, 9.0),
+    "5th_house": (1.49, 1.90)
+}
+
+#CASH_OUTS 
+def calcular_crma_apostas_e_cashouts(historico, martingale1, martingale2):
+    try:
+        saldo_limpo = saldo.replace('Kz', '').replace('AOA', '').replace(',', '.').strip()
+        saldo_float = float(saldo_limpo)
+    except Exception as e:
+        print("Erro ao converter saldo:", e)
+        saldo_float = 0.0
+
+    aposta1 = round((saldo_float * 0.04) * (2 ** martingale1), 2)
+    aposta2 = round((saldo_float * 0.02) * (2 ** martingale2), 2)
+
+    if len(historico) < 3:
+        return aposta1, aposta2, 5.0, 9.0
+
+    terceira_ultima = historico[-3]
+    segunda_ultima = historico[-2]
+
+    if terceira_ultima < segunda_ultima:
+        cashout1 = 5.0
+        cashout2 = 9.0
+    else:
+        cashout1 = 9.0
+        cashout2 = terceira_ultima * 2
+
+    return aposta1, aposta2, cashout1, cashout2
+
+def map_history_to_pattern(history, pattern_len):
+    """Mapeia os últimos valores do histórico para letras conforme as regras."""
+    rec = []
+    for x in history[-pattern_len:]:
+        if x >= 10.0:
+            rec.append("A")
+        elif x >= 2.0:
+            rec.append("R")
+        else:
+            rec.append("X")
+    return "".join(rec)
+
+def check_pattern_similarity(history, pattern):
+    """Retorna True se o histórico recente corresponde ao padrão (>=50% de acerto)."""
+    pattern_len = len(pattern)
+    if len(history) < pattern_len:
+        return False
+    history_pattern = map_history_to_pattern(history, pattern_len)
+    matches = sum(1 for h, p in zip(history_pattern, pattern) if h == p)
+    return (matches / pattern_len) >= 0.5
+
+def ajustar_cashout_automatico(cashout1, cashout2):
+    try:
+        # 1ª aposta
+        auto_button_1 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_button_1))
+        )
+        auto_button_1.click()
+        auto_switch_1 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_switch_1))
+        )
+        driver.execute_script("arguments[0].click();", auto_switch_1)
+        auto_input_1 = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, auto_cashout_input_1))
+        )
+        auto_input_1.send_keys(Keys.CONTROL + "a")
+        auto_input_1.send_keys(Keys.DELETE)
+        auto_input_1.send_keys(str(cashout1))
+        # 2ª aposta
+        auto_button_2 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_button_2))
+        )
+        driver.execute_script("arguments[0].click();", auto_button_2)
+        auto_switch_2 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_switch_2))
+        )
+        driver.execute_script("arguments[0].click();", auto_switch_2)
+        auto_input_2 = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, auto_cashout_input_2))
+        )
+        auto_input_2.send_keys(Keys.CONTROL + "a")
+        auto_input_2.send_keys(Keys.DELETE)
+        auto_input_2.send_keys(str(cashout2))
+        print(f"Cashouts ajustados: {cashout1} e {cashout2}")
+    except Exception as e:
+        print(f"Erro ao ajustar cashouts: {e}")
+
+# ------------------- FIM: LÓGICA CRMA E AJUSTE DE CASHOUT -------------------
+def calcular_cashout_dinamico(ultimos_rosas, modo):
+    # Exemplo simples: ajuste conforme sua lógica real
+    if modo == "padrao" or not ultimos_rosas:
+        return 1.49, 1.90
+    # Exemplo: se última rosa foi há muitas rodadas, arrisca mais
+    if ultimos_rosas[-1] > 10:
+        return 2.0, 2.5
+    return 1.49, 1.90
+
+def calcular_apostas_e_cashout(saldo, martingale1, martingale2, ultimos_rosas, modo):
+    try:
+        saldo_limpo = saldo.replace('Kz', '').replace('AOA', '').replace(',', '.').strip()
+        saldo_float = float(saldo_limpo)
+    except Exception as e:
+        print("Erro ao converter saldo:", e)
+        saldo_float = 0.0
+
+    aposta1 = round((saldo_float * 0.05) * (2 ** martingale1), 2)
+    aposta2 = round((saldo_float * 0.02) * (2 ** martingale2), 2)
+
+    cashout1, cashout2 = calcular_cashout_dinamico(ultimos_rosas, modo)
+
+    return aposta1, aposta2, cashout1, cashout2
+# ... RESTANTE DO SEU CÓDIGO INALTERADO ATÉ A FUNÇÃO estrategia_principal() ...
+
+def verificar_resultado(aposta, cashout):
+    try:
+        ultimo_resultado = pegar_historico_real()[0]
+        print(f"📊 Último multiplicador: {ultimo_resultado}x")
+        return ultimo_resultado >= cashout, ultimo_resultado
+    except Exception as e:
+        print(f"❌ Erro ao verificar resultado: {e}")
+        return False, 0.0
+
+def apostar_com_base_na_banca(martingale_count, aposta_idx):
+    global saldo, base_bet_percentage_1, base_bet_percentage_2
+    try:
+        saldo = obter_saldo()  # Sempre atualiza o saldo antes de apostar
+        print(f"Saldo atual: {saldo}")
+        if saldo == "N/A":
+            raise Exception("Não foi possível obter o saldo")
+        saldo_clean = saldo.replace('Kz', '').replace('AOA', '').replace(',', '.').strip()
+        saldo_float = float(saldo_clean)
+        base_percentage = base_bet_percentage_1 if aposta_idx == 1 else base_bet_percentage_2
+        aposta = saldo_float * base_percentage * (2 ** martingale_count)
+        print(f"💰 Aposta {aposta_idx} calculada: Kz {aposta:.2f} (Martingale nível {martingale_count}, {base_percentage * 100 * (2 ** martingale_count)}% do saldo)")
+
+        input_aposta = WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, f'app-bet-control:nth-child({aposta_idx}) div.bet-block input')))
+        input_aposta.send_keys(Keys.CONTROL + "a")
+        input_aposta.send_keys(Keys.DELETE)
+        time.sleep(0.5)
+        input_aposta.send_keys(str(aposta))
+
+        print(f"Valor da aposta {aposta_idx} definido: {aposta}")
+        return aposta
+    except Exception as e:
+        print(f"❌ Erro ao calcular/configurar aposta {aposta_idx}: {e}")
+        return None
+
+# Substitua apenas a função estrategia_principal por esta versão:
+
+def realizar_aposta(aposta_idx, martingale_count, botao_xpath, cashout):
+    aposta = apostar_com_base_na_banca(martingale_count, aposta_idx)
+    if aposta is None:
+        return False, 0.0, aposta
+    if clicar_botao(botao_xpath):
+        time.sleep(5)  # Tempo para o jogo processar a aposta
+        resultado, multiplicador = verificar_resultado(aposta, cashout)
+        return resultado, multiplicador, aposta
+    return False, 0.0, aposta
+
+def estrategia_principal():
+    global casas_passadas, detectou_rosa, ultima_vela_rosa, martingale_count_1, martingale_count_2, ultimo_resultado, vitorias, derrotas, lucro_acumulado, perdas_acumuladas, saldo, rodadas, rodadas_apos_rosa
+
+    configurar_cashout_automatico()
+    padrao_ativo = None
+    casas_em_padrao = 0
+
+    while True:
+        historico = pegar_historico_real()
+        if not historico or len(historico) < 5:
+            print("⚠️ Histórico insuficiente ou não capturado")
+            time.sleep(2)
+            continue
+        print(f"📈 Histórico atual: {historico}")
+        rodadas = historico
+
+        # 1. Se houver um padrão CRMA ativo, continue seguindo enquanto ele corresponder
+        if padrao_ativo:
+            if check_pattern_similarity(rodadas, padrao_ativo):
+                cashouts = CASH_OUTS.get(padrao_ativo, CASH_OUTS["5th_house"])
+                ajustar_cashout_automatico(*cashouts)
+                print(f"🔎 Padrão CRMA em andamento '{padrao_ativo}'. Continuando caçada. Cashouts: {cashouts}")
+                casas_em_padrao += 1
+                # Aqui você pode chamar sua lógica de aposta padrão, se desejar.
+            else:
+                print(f"⚠️ Padrão CRMA '{padrao_ativo}' QUEBROU antes do Rosa. Voltando a aguardar Rosa para ativar 5ª casa.")
+                padrao_ativo = None
+                casas_em_padrao = 0
+
+# The following block was removed because top-level 'if' statements are not valid Python syntax.
+# Its logic should be inside a function, such as 'estrategia_principal', where similar logic already exists.
+
+# ... RESTANTE DO SEU CÓDIGO SEGUIDO NORMALMENTE ...
+
+# Configuração do Selenium
+options = Options()
+options.add_argument("--disable-logging")
+options.add_argument("--start-maximized")
+options.add_argument("--disable-blink-features=AutomationControlled")
+options.set_preference("dom.webdriver.enabled", False)
+options.set_preference("useAutomationExtension", False)
+
+# Variáveis globais
+iframe_externo = None
+iframe_interno = None
+driver = None
+casas_passadas = 0
+detectou_rosa = False
+ultima_vela_rosa = 0.0
+martingale_count_1 = 0
+martingale_count_2 = 0
+limite_martingale = 2  # Limite de tentativas de Martingale
+limite_martingale = 2  # Limite de tentativas de Martingale
+base_bet_percentage_1 = 0.02  # 2% para a 1ª aposta
+base_bet_percentage_2 = 0.01  # 1% para a 2ª aposta
+vitorias = 0
+derrotas = 0
+lucro_acumulado = 0.0
+perdas_acumuladas = 0.0
+ultimo_resultado = "N/A"
+historico_entradas = []
+saldo = "N/A"
+# rodadas = []
+rodadas_apos_rosa = []
+historico_martingale = []
+ultimo_multiplicador_processado = None
+
+# XPaths dos botões e elementos
+botao1_xpath = "/html/body/app-root/app-game/div/div[1]/div[2]/div/div[2]/div[3]/app-bet-controls/div/app-bet-control[1]/div/div[1]/div[2]/div[2]/button"
+botao2_xpath = "/html/body/app-root/app-game/div/div[1]/div[2]/div/div[2]/div[3]/app-bet-controls/div/app-bet-control[2]/div/div[1]/div[3]/div[2]/button"
+cashout_xpath = "/html/body/app-root/app-game/div/div[1]/div[2]/div/div[2]/div[3]/app-bet-controls/div/app-bet-control[1]/div/div[1]/div[3]/div[2]/button"
+
+# XPaths para cashout automático
+auto_cashout_button_1 = "/html/body/app-root/app-game/div/div[1]/div[2]/div/div[2]/div[3]/app-bet-controls/div/app-bet-control[1]/div/div[1]/div[1]/app-navigation-switcher/div/button[2]"
+auto_cashout_switch_1 = "/html/body/app-root/app-game/div/div[1]/div[2]/div/div[2]/div[3]/app-bet-controls/div/app-bet-control[1]/div/div[3]/div/div[2]/div[1]/app-ui-switcher/div"
+auto_cashout_input_1 = "/html/body/app-root/app-game/div/div[1]/div[2]/div/div[2]/div[3]/app-bet-controls/div/app-bet-control[1]/div/div[3]/div/div[2]/div[2]/div/app-spinner/div/div[2]/input"
+
+auto_cashout_button_2 = "/html/body/app-root/app-game/div/div[1]/div[2]/div/div[2]/div[3]/app-bet-controls/div/app-bet-control[2]/div/div[1]/div[2]/app-navigation-switcher/div/button[2]"
+auto_cashout_switch_2 = "/html/body/app-root/app-game/div/div[1]/div[2]/div/div[2]/div[3]/app-bet-controls/div/app-bet-control[2]/div/div[3]/div/div[2]/div[1]/app-ui-switcher/div"
+auto_cashout_input_2 = "/html/body/app-root/app-game/div/div[1]/div[2]/div/div[2]/div[3]/app-bet-controls/div/app-bet-control[2]/div/div[3]/div/div[2]/div[2]/div/app-spinner/div/div[2]/input"
+
+# Banco de dados
+def conectar():
+    return sqlite3.connect("historico_aviator.db")
+
+def criar_tabelas():
+    conn = conectar()
+    cursor = conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS rodadas")
+    cursor.execute(""" 
+        CREATE TABLE rodadas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            multiplicador FLOAT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("DROP TABLE IF EXISTS entradas")
+    cursor.execute(""" 
+        CREATE TABLE entradas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            aposta FLOAT,
+            martingale INTEGER,
+            outcome TEXT,
+            profit_loss FLOAT,
+            multiplicador FLOAT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def salvar_entrada(aposta, martingale, outcome, profit_loss, multiplicador):
+    conn = conectar()
+    cursor = conn.cursor()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        "INSERT INTO entradas (timestamp, aposta, martingale, outcome, profit_loss, multiplicador) VALUES (?, ?, ?, ?, ?, ?)",
+        (timestamp, aposta, martingale, outcome, profit_loss, multiplicador)
+    )
+    conn.commit()
+    conn.close()
+    exportar_historico_excel()
+    atualizar_tabela_historico(timestamp, aposta, martingale, outcome, profit_loss, multiplicador)
+
+criar_tabelas()
+
+def salvar_rodada(multiplicador):
+    conn = conectar()
+    cursor = conn.cursor()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("INSERT INTO rodadas (multiplicador, timestamp) VALUES (?, ?)", (multiplicador, timestamp))
+    conn.commit()
+    conn.close()
+
+def salvar_entrada(aposta, martingale, outcome, profit_loss, multiplicador):
+    conn = conectar()
+    cursor = conn.cursor()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        "INSERT INTO entradas (timestamp, aposta, martingale, outcome, profit_loss, multiplicador) VALUES (?, ?, ?, ?, ?, ?)",
+        (timestamp, aposta, martingale, outcome, profit_loss, multiplicador)
+    )
+    conn.commit()
+    conn.close()
+    exportar_historico_excel()
+    atualizar_tabela_historico(timestamp, aposta, martingale, outcome, profit_loss, multiplicador)
+
+def exportar_historico_excel():
+    try:
+        conn = conectar()
+        cursor = conn.cursor()
+        cursor.execute("SELECT timestamp, aposta, martingale, outcome, profit_loss, multiplicador FROM entradas ORDER BY timestamp DESC")
+        entradas = cursor.fetchall()
+        conn.close()
+
+        df = pd.DataFrame(entradas, columns=["Timestamp", "Aposta", "Martingale", "Outcome", "Profit_Loss", "Multiplicador"])
+        df["Aposta"] = df["Aposta"].apply(lambda x: f"Kz {x:.2f}")
+        df["Profit_Loss"] = df["Profit_Loss"].apply(lambda x: f"{'+' if x >= 0 else ''}Kz {abs(x):.2f}")
+        df["Multiplicador"] = df["Multiplicador"].apply(lambda x: f"{x:.2f}x")
+        df["Martingale"] = df["Martingale"].apply(lambda x: f"{x} ({'Base' if x == 0 else 'x' + str(2**x)})")
+
+        now = datetime.now()
+        data_diaria = now.strftime("%Y-%m-%d")
+        df_diario = df[df["Timestamp"].str.startswith(data_diaria)]
+        df_diario.to_excel(f"historico_diario_{data_diaria}.xlsx", index=False)
+
+        inicio_semana = now - timedelta(days=now.weekday())
+        fim_semana = inicio_semana + timedelta(days=6)
+        semana_str = f"{inicio_semana.strftime('%Y-%m-%d')}_a_{fim_semana.strftime('%Y-%m-%d')}"
+        df_semanal = df[(df["Timestamp"] >= inicio_semana.strftime("%Y-%m-%d")) & (df["Timestamp"] <= fim_semana.strftime("%Y-%m-%d"))]
+        df_semanal.to_excel(f"historico_semanal_{semana_str}.xlsx", index=False)
+
+        mes_str = now.strftime("%Y-%m")
+        df_mensal = df[df["Timestamp"].str.startswith(mes_str)]
+        df_mensal.to_excel(f"historico_mensal_{mes_str}.xlsx", index=False)
+
+        print(f"📊 Histórico exportado para Excel: Diário ({data_diaria}), Semanal ({semana_str}), Mensal ({mes_str})")
+    except Exception as e:
+        print(f"❌ Erro ao exportar histórico para Excel: {e}")
+
+def obter_ultimas_rodadas(n=20):
+    try:
+        conn = conectar()
+        cursor = conn.cursor()
+        cursor.execute("SELECT multiplicador FROM rodadas ORDER BY timestamp DESC LIMIT ?", (n,))
+        dados = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return dados
+    except Exception as e:
+        print(f"❌ Erro ao obter últimas rodadas: {e}")
+        return []
+
+def obter_estatisticas(periodo):
+    try:
+        conn = conectar()
+        cursor = conn.cursor()
+        now = datetime.now()
+        if periodo == "Diário":
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif periodo == "Semanal":
+            start = now - timedelta(days=now.weekday())
+            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif periodo == "Mensal":
+            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        else:
+            start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        cursor.execute("""
+            SELECT outcome, profit_loss 
+            FROM entradas 
+            WHERE timestamp >= ?
+        """, (start.strftime("%Y-%m-%d %H:%M:%S"),))
+
+        vitorias = 0
+        derrotas = 0
+        lucro = 0.0
+        perdas = 0.0
+
+        for row in cursor.fetchall():
+            outcome, profit_loss = row
+            if outcome == "Vitória":
+                vitorias += 1
+                lucro += profit_loss
+            elif outcome == "Derrota":
+                derrotas += 1
+                perdas += abs(profit_loss)
+
+        conn.close()
+        return vitorias, derrotas, lucro, perdas
+    except Exception as e:
+        print(f"❌ Erro ao obter estatísticas para {periodo}: {e}")
+        return 0, 0, 0.0, 0.0
+
+def obter_entradas_historico():
+    try:
+        conn = conectar()
+        cursor = conn.cursor()
+        cursor.execute("SELECT timestamp, aposta, martingale, outcome, profit_loss, multiplicador FROM entradas ORDER BY timestamp DESC LIMIT 100")
+        entradas = [
+            {
+                "timestamp": row[0],
+                "aposta": row[1],
+                "martingale": row[2],
+                "outcome": row[3],
+                "profit_loss": row[4],
+                "multiplicador": row[5]
+            }
+            for row in cursor.fetchall()
+        ]
+        conn.close()
+        return entradas
+    except Exception as e:
+        print(f"❌ Erro ao obter histórico de entradas: {e}")
+        return []
+
+def obter_saldo():
+    global driver, iframe_externo, iframe_interno
+    try:
+        driver.switch_to.default_content()
+        saldo_element = WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.XPATH, '//span[contains(@class, "balance") or contains(text(), "Kz")]'))
+        )
+        saldo = saldo_element.text.strip()
+        print(f"Saldo capturado: {saldo}")
+        driver.switch_to.frame(iframe_externo)
+        driver.switch_to.frame(iframe_interno)
+        return saldo
+    except Exception as e:
+        print(f"Erro ao obter saldo: {e}")
+        try:
+            saldo_element = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, '//header//span[contains(text(), "Kz")]'))
+            )
+            saldo = saldo_element.text.strip()
+            print(f"Saldo capturado (fallback): {saldo}")
+            driver.switch_to.frame(iframe_externo)
+            driver.switch_to.frame(iframe_interno)
+            return saldo
+        except Exception as e2:
+            print(f"Erro no fallback: {e2}")
+            driver.switch_to.frame(iframe_externo)
+            driver.switch_to.frame(iframe_interno)
+            return "N/A"
+
+def generate_ohlc(data, group_size=5):
+    ohlc_data = []
+    num_groups = len(data) // group_size
+    for i in range(num_groups):
+        chunk = data[i*group_size:(i+1)*group_size]
+        open_ = chunk[0]
+        high = max(chunk)
+        low = min(chunk)
+        close = chunk[-1]
+        ohlc_data.append((open_, high, low, close))
+    return ohlc_data
+
+def on_mouse_wheel(event, ax, canvas):
+    if not ax:
+        return
+    x, y = event.xdata, event.ydata
+    if x is None or y is None:
+        return
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+    zoom_factor = 1.2 if event.delta > 0 else 1 / 1.2
+    new_xlim = [x - (x - xlim[0]) * zoom_factor, x + (xlim[1] - x) * zoom_factor]
+    new_ylim = [y - (y - ylim[0]) * zoom_factor, y + (ylim[1] - y) * zoom_factor]
+    ax.set_xlim(new_xlim)
+    ax.set_ylim(new_ylim)
+    canvas.draw_idle()
+
+def analisar_tendencia(rodadas, window=5):
+    if len(rodadas) < window * 2:
+        return "Insuficiente", "gray"
+
+    medias = []
+    for i in range(0, len(rodadas) - window + 1, window):
+        bloco = rodadas[i:i + window]
+        if len(bloco) == window:
+            medias.append(sum(bloco) / window)
+
+    if len(medias) < 2:
+        return "Insuficiente", "gray"
+
+    ultima_media = medias[-1]
+    penultima_media = medias[-2]
+    margem = 0.5
+
+    if ultima_media > penultima_media + margem:
+        return "Alta", "green"
+    elif ultima_media < penultima_media - margem:
+        return "Baixa", "red"
+    else:
+        return "Lateral", "yellow"
+
+def analisar_velas_rosa(rodadas):
+    if not rodadas:
+        return "Nenhuma vela rosa", len(rodadas), "Baixa"
+
+    indices_rosa = [i for i, x in enumerate(rodadas) if x >= 10.0]
+
+    if not indices_rosa:
+        return "Nenhuma vela rosa", len(rodadas), "Baixa"
+
+    intervalos = []
+    for i in range(1, len(indices_rosa)):
+        intervalos.append(indices_rosa[i] - indices_rosa[i-1])
+
+    intervalo_medio = sum(intervalos) / len(intervalos) if intervalos else len(rodadas)
+    ultima_rosa = indices_rosa[0]
+    distancia = ultima_rosa
+
+    if distancia >= intervalo_medio:
+        probabilidade = "Alta"
+    elif distancia >= intervalo_medio * 0.5:
+        probabilidade = "Média"
+    else:
+        probabilidade = "Baixa"
+
+    return f"{distancia} rodadas atrás", intervalo_medio, probabilidade
+
+def mostrar_grafico_detetive(canvas_frame, rodadas):
+    for widget in canvas_frame.winfo_children():
+        widget.destroy()
+    if not rodadas or len(rodadas) < 5:
+        label = tk.Label(canvas_frame, text="Aguardando mais rodadas para exibir o gráfico...", font=("Arial", 12), fg="white", bg="#1e1e1e")
+        label.pack(expand=True, fill=tk.BOTH)
+        return
+    ohlc_data = generate_ohlc(rodadas)
+    if not ohlc_data:
+        label = tk.Label(canvas_frame, text="Sem dados suficientes para o gráfico.", font=("Arial", 12), fg="white", bg="#1e1e1e")
+        label.pack(expand=True, fill=tk.BOTH)
+        return
+    fig, ax = plt.subplots(figsize=(8, 4))
+    width = 0.4
+    for i, (open_, high, low, close) in enumerate(ohlc_data):
+        cor = 'green' if close >= open_ else 'red'
+        ax.plot([i, i], [low, high], color='black', linewidth=1)
+        ax.add_patch(Rectangle((i - width/2, min(open_, close)), width, abs(close - open_), color=cor))
+        grupo = rodadas[i*5:(i+1)*5]
+        voos_str = ", ".join([f"{v:.2f}" for v in grupo])
+        ax.text(i + 0.1, high + 0.5, voos_str, fontsize=8, rotation=45, color='blue')
+    ax.set_xticks(range(len(ohlc_data)))
+    ax.set_title("Modo Detetive - Gráfico Candlestick com Multiplicadores")
+    ax.set_xlabel("Grupo de Rodadas")
+    ax.set_ylabel("Multiplicador (x)")
+    ax.grid(True)
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+    toolbar = NavigationToolbar2Tk(canvas, canvas_frame)
+    toolbar.update()
+    toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+    def mouse_wheel_event(event):
+        on_mouse_wheel(event, ax, canvas)
+    canvas.mpl_connect('scroll_event', mouse_wheel_event)
+
+def mostrar_grafico_analista(canvas_frame, rodadas):
+    for widget in canvas_frame.winfo_children():
+        widget.destroy()
+    if not rodadas or len(rodadas) < 5:
+        label = tk.Label(canvas_frame, text="Aguardando mais rodadas para exibir o gráfico...", font=("Arial", 12), fg="white", bg="#1e1e1e")
+        label.pack(expand=True, fill=tk.BOTH)
+        return
+    ohlc_data = generate_ohlc(rodadas)
+    if not ohlc_data:
+        label = tk.Label(canvas_frame, text="Sem dados suficientes para o gráfico.", font=("Arial", 12), fg="white", bg="#1e1e1e")
+        label.pack(expand=True, fill=tk.BOTH)
+        return
+    dates = pd.date_range('2025-01-01', periods=len(ohlc_data))
+    df = pd.DataFrame(ohlc_data, columns=["Open", "High", "Low", "Close"], index=dates)
+    mc = mpf.make_marketcolors(up='green', down='red', inherit=True)
+    s = mpf.make_mpf_style(marketcolors=mc)
+    fig = plt.figure(figsize=(8, 4))
+    ax = fig.add_subplot(111)
+    mpf.plot(df, type='candle', style=s, title="Modo Analista - Gráfico Candlestick", ylabel='Multiplicador (x)', ax=ax, returnfig=True)
+    canvas = FigureCanvasTkAgg(fig, master=canvas_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+    toolbar = NavigationToolbar2Tk(canvas, canvas_frame)
+    toolbar.update()
+    toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+    def mouse_wheel_event(event):
+        on_mouse_wheel(event, ax, canvas)
+    canvas.mpl_connect('scroll_event', mouse_wheel_event)
+
+def update_stats(period, frame, stats_label):
+    try:
+        if period not in ["Diário", "Semanal", "Mensal", "Anual"]:
+            print(f"⚠️ Período inválido: {period}")
+            return
+        vitorias, derrotas, lucro, perdas = obter_estatisticas(period)
+        lucro = float(lucro) if lucro is not None else 0.0
+        perdas = float(perdas) if perdas is not None else 0.0
+        if stats_label and hasattr(stats_label, 'config'):
+            stats_label.config(text=f"Ganhos: {vitorias} | Perdas: {derrotas} | Lucro: Kz {lucro:.2f} | Perdas: Kz {perdas:.2f}")
+        else:
+            print(f"⚠️ stats_label inválido para período {period}")
+    except Exception as e:
+        print(f"❌ Erro ao atualizar estatísticas para {period}: {e}")
+
+def configurar_navegacao():
+    global iframe_externo, iframe_interno, driver
+    print("📢 Iniciando configuração de navegação...")
+
+    try:
+        # Inicializar o WebDriver
+        gecko_path = GeckoDriverManager().install()
+        print(f"✅ geckodriver instalado em: {gecko_path}")
+        webdriver_service = Service(gecko_path, log_path="geckodriver.log")
+        driver = webdriver.Firefox(service=webdriver_service, options=options)
+        driver.implicitly_wait(10)
+        print("✅ Firefox WebDriver iniciado com sucesso")
+
+        # Acessar a página inicial
+        print("📢 Navegando para o site...")
+        driver.get("https://www.bantubet.co.ao/pt/games")
+        time.sleep(15)
+        driver.refresh()
+        print("✅ Página inicial carregada e atualizada.")
+
+        # Aguardar e clicar no botão de login
+        print("📢 Aguardando botão de login...")
+        login_button = WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "#root > div.layout-header-holder-bc > header > div.hdr-main-content-bc > div.hdr-user-bc > button.btn.s-small.sign-in"))
+        )
+        time.sleep(5)
+        login_button.click()
+        print("✅ Botão de login clicado.")
+
+        # Preencher campos de login
+        print("📢 Preenchendo campos de login...")
+        phone_input = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, '//*[@id="root"]/div[6]/div/div/div/div/div/div[2]/form/div[1]/div[3]/div/label/input'))
+        )
+        phone_input.send_keys("923630632")
+        time.sleep(2)
+        password_input = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, '//*[@id="root"]/div[6]/div/div/div/div/div/div[2]/form/div[1]/div[4]/div/label/input'))
+        )
+        password_input.send_keys("Ag9327777771317")
+        time.sleep(4)
+        submit_button = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, '//*[@id="root"]/div[6]/div/div/div/div/div/div[2]/form/div[1]/div[6]/div/button'))
+        )
+        submit_button.click()
+        print("📢 Login enviado, aguardando redirecionamento...")
+        time.sleep(10)
+
+        # Verificar login
+        try:
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.XPATH, '//span[contains(@class, "balance") or contains(text(), "Kz")]'))
+            )
+            print("✅ Login bem-sucedido! Saldo visível.")
+        except Exception as e:
+            print(f"❌ Falha ao verificar login: {e}")
+            raise Exception("Login não foi bem-sucedido. Verifique as credenciais ou a página de login.")
+
+        # Acessar a página do jogo Aviator
+        print("📢 Acessando página do jogo Aviator...")
+        driver.get("https://www.bantubet.co.ao/pt/games?openGames=806666-real&gameNames=Aviator")
+        time.sleep(15)
+
+        # Localizar iframe externo
+        print("📢 Localizando iframe externo...")
+        iframe_externo = WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.XPATH, '//*[@id="root"]/div[3]/div[1]/div[1]/div/iframe'))
+        )
+        driver.switch_to.frame(iframe_externo)
+        print("✅ Iframe externo encontrado e acessado.")
+        time.sleep(10)
+
+        # Localizar iframe interno
+        print("📢 Localizando iframe interno...")
+        iframe_interno = WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.XPATH, '//*[@id="gameFrame"]'))
+        )
+        driver.switch_to.frame(iframe_interno)
+        print("✅ Iframe interno encontrado e acessado.")
+        time.sleep(10)
+
+        # Verificar se o jogo carregou
+        try:
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.CLASS_NAME, 'result-history'))
+            )
+            print("✅ Jogo Aviator carregado com sucesso. Histórico visível.")
+        except Exception as e:
+            print(f"❌ Falha ao carregar o jogo: {e}")
+            raise Exception("Não foi possível carregar o jogo Aviator. Verifique a URL ou a conexão.")
+
+    except Exception as e:
+        print(f"❌ Erro crítico na configuração de navegação: {e}")
+        print("📢 Tentando capturar screenshot para depuração...")
+        try:
+            driver.save_screenshot("erro_navegacao.png")
+            print("✅ Screenshot salvo como 'erro_navegacao.png'.")
+        except:
+            print("⚠️ Falha ao salvar screenshot.")
+        if driver:
+            driver.quit()
+        exit(1)
+# Após criar o root e antes de mostrar gráficos ou atualizar extrator
+rodadas.clear()
+rodadas.extend(reversed(obter_ultimas_rodadas(600)))  # Carrega do banco de dados, ordem do mais antigo para o mais recente
+
+# Defina a função atualizar_extrator_rodadas antes de chamá-la
+def atualizar_extrator_rodadas():
+    for row in range(200):
+        for col in range(6):
+            idx = row * 6 + col
+            if idx < len(rodadas):
+                multiplicador = rodadas[idx]
+                rodadas_labels[row][col].config(text=f"{multiplicador:.2f}x", bg=get_color(multiplicador), fg="white")
+            else:
+                rodadas_labels[row][col].config(text="N/A", bg="#2e2e2e", fg="white")
+
+# Atualize a interface imediatamente
+atualizar_extrator_rodadas()
+
+# GUI e outras funções (mantidas do seu script original, com ajustes mínimos)
+root = tk.Tk()
+root.title("Analisador de Rodadas - Piloto Automático")
+root.geometry("1200x800")
+root.configure(bg="#1e1e1e")
+
+main_pane = ttk.PanedWindow(root, orient=tk.VERTICAL)
+main_pane.pack(fill=tk.BOTH, expand=True)
+
+stats_frame = ttk.Frame(main_pane)
+main_pane.add(stats_frame, weight=1)
+
+notebook = ttk.Notebook(stats_frame)
+notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+stats_labels = {}
+
+for period in ["Diário", "Semanal", "Mensal", "Anual"]:
+    frame = ttk.Frame(notebook)
+    notebook.add(frame, text=period)
+    top_label = tk.Label(frame, text=f"Saldo: {saldo} | Total de Ganhos Operacionais: Kz {lucro_acumulado - perdas_acumuladas:.2f}", font=("Arial", 12), fg="white", bg="#1e1e1e")
+    top_label.pack(pady=5, fill=tk.X)
+    stats_label = tk.Label(frame, text="", font=("Arial", 10), fg="white", bg="#1e1e1e")
+    stats_label.pack(pady=5, fill=tk.X)
+    stats_labels[period] = (frame, stats_label)
+    update_stats(period, frame, stats_label)
+
+def on_tab_change(event):
+    selected_tab = notebook.tab(notebook.select(), "text")
+    frame, stats_label = stats_labels[selected_tab]
+    update_stats(selected_tab, frame, stats_label)
+
+notebook.bind("<<NotebookTabChanged>>", on_tab_change)
+
+middle_pane = ttk.PanedWindow(main_pane, orient=tk.HORIZONTAL)
+main_pane.add(middle_pane, weight=4)
+
+chart_frame = ttk.Frame(middle_pane)
+middle_pane.add(chart_frame, weight=2)
+botoes_frame = ttk.Frame(chart_frame)
+botoes_frame.pack(fill=tk.X, pady=5)
+btn_detetive = ttk.Button(botoes_frame, text="Modo Detetive", command=lambda: mostrar_grafico_detetive(chart_frame, rodadas))
+btn_detetive = ttk.Button(botoes_frame, text="Modo Detetive", command=lambda: mostrar_grafico_detetive(chart_frame, rodadas))
+btn_analista = ttk.Button(botoes_frame, text="Modo Analista", command=lambda: mostrar_grafico_analista(chart_frame, rodadas))
+btn_detetive.grid(row=0, column=0, padx=10)
+btn_analista.grid(row=0, column=1, padx=10)
+mostrar_grafico_detetive(chart_frame, list(rodadas))
+right_pane = ttk.PanedWindow(middle_pane, orient=tk.VERTICAL)
+middle_pane.add(right_pane, weight=1)
+
+status_frame = ttk.Frame(right_pane)
+right_pane.add(status_frame, weight=1)
+
+status_frame.grid_rowconfigure(0, weight=0)
+status_frame.grid_rowconfigure(1, weight=0)
+status_frame.grid_rowconfigure(2, weight=0)
+status_frame.grid_rowconfigure(3, weight=0)
+status_frame.grid_rowconfigure(4, weight=0)
+status_frame.grid_rowconfigure(5, weight=0)
+status_frame.grid_rowconfigure(6, weight=0)
+status_frame.grid_rowconfigure(7, weight=0)
+status_frame.grid_rowconfigure(8, weight=0)
+status_frame.grid_columnconfigure(0, weight=1)
+
+tk.Label(status_frame, text="Status da Estratégia", font=("Arial", 12, "bold"), fg="white", bg="#1e1e1e").grid(row=0, column=0, pady=5, sticky="ew")
+status_label = tk.Label(status_frame, text="Aguardando vela rosa (>= 10.0x) na 1ª posição", font=("Arial", 10), fg="white", bg="#1e1e1e")
+status_label.grid(row=1, column=0, sticky="ew")
+martingale_label = tk.Label(status_frame, text="Martingale: 0 (Aposta base)", font=("Arial", 10), fg="white", bg="#1e1e1e")
+martingale_label.grid(row=2, column=0, sticky="ew")
+resultado_label = tk.Label(status_frame, text="Última Entrada: N/A", font=("Arial", 10), fg="white", bg="#1e1e1e")
+resultado_label.grid(row=3, column=0, sticky="ew")
+total_gains_label = tk.Label(status_frame, text=f"Total de Ganhos Operacionais: Kz {lucro_acumulado - perdas_acumuladas:.2f}", font=("Arial", 12), fg="white", bg="#1e1e1e")
+total_gains_label.grid(row=4, column=0, pady=5, sticky="ew")
+
+tendencia_label = tk.Label(status_frame, text="Tendência: Insuficiente", font=("Arial", 10), fg="gray", bg="#1e1e1e")
+tendencia_label.grid(row=5, column=0, sticky="ew")
+velas_rosa_label = tk.Label(status_frame, text="Última Vela Rosa: N/A | Média: N/A | Probabilidade: N/A", font=("Arial", 10), fg="white", bg="#1e1e1e")
+velas_rosa_label.grid(row=6, column=0, sticky="ew")
+
+relatorio_label = tk.Label(status_frame, text="Relatório: Aguardando...", font=("Arial", 10), fg="white", bg="#1e1e1e", wraplength=300)
+relatorio_label.grid(row=7, column=0, sticky="ew")
+
+historico_mg_label = tk.Label(status_frame, text="Histórico de Martingale: Nenhum", font=("Arial", 10), fg="white", bg="#1e1e1e", wraplength=300)
+historico_mg_label.grid(row=8, column=0, sticky="ew")
+
+rodadas_container = ttk.Frame(right_pane)
+right_pane.add(rodadas_container, weight=3)
+
+tk.Label(rodadas_container, text="Extrator de Rodadas", font=("Arial", 12, "bold"), fg="white", bg="#1e1e1e").pack(fill=tk.X, pady=5)
+
+canvas_rodadas = tk.Canvas(rodadas_container, bg="#1e1e1e")
+scrollbar_rodadas = ttk.Scrollbar(rodadas_container, orient="vertical", command=canvas_rodadas.yview)
+canvas_rodadas.configure(yscrollcommand=scrollbar_rodadas.set)
+
+scrollbar_rodadas.pack(side=tk.RIGHT, fill=tk.Y)
+canvas_rodadas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+rodadas_frame = ttk.Frame(canvas_rodadas)
+canvas_rodadas.create_window((0, 0), window=rodadas_frame, anchor="nw")
+
+rodadas_labels = []
+for row in range(200):
+    row_labels = []
+    for col in range(6):
+        label = tk.Label(
+            rodadas_frame,
+            text="N/A",
+            font=("Arial", 8),
+            fg="white",
+            bg="#2e2e2e",
+            width=8,
+            height=1,
+            anchor="center",
+            relief="sunken"
+        )
+        label.grid(row=row, column=col, padx=2, pady=2, sticky="nsew")
+        row_labels.append(label)
+    rodadas_labels.append(row_labels)
+
+def get_color(multiplicador):
+    if multiplicador >= 10.0:
+        return "#FF69B4"  # Rosa
+    elif multiplicador >= 2.0:
+        return "#800080"  # Roxo
+    else:
+        return "#87CEEB"  # Azul claro
+
+for row in range(200):
+    for col in range(6):
+        idx = row * 6 + col
+        if idx < len(rodadas):
+            multiplicador = rodadas[idx]
+            rodadas_labels[row][col].config(text=f"{multiplicador:.2f}x", bg=get_color(multiplicador), fg="white")
+        else:
+            rodadas_labels[row][col].config(text="N/A", bg="#2e2e2e", fg="white")
+
+def on_rodadas_frame_configure(event):
+    canvas_rodadas.configure(scrollregion=canvas_rodadas.bbox("all"))
+
+rodadas_frame.bind("<Configure>", on_rodadas_frame_configure)
+
+def on_rodadas_mouse_scroll(event):
+    if event.delta > 0:
+        canvas_rodadas.yview_scroll(-1, "units")
+    else:
+        canvas_rodadas.yview_scroll(1, "units")
+
+canvas_rodadas.bind_all("<MouseWheel>", on_rodadas_mouse_scroll)
+
+historico_frame = ttk.Frame(main_pane)
+main_pane.add(historico_frame, weight=1)
+tk.Label(historico_frame, text="Histórico de Entradas", font=("Arial", 12, "bold"), fg="white", bg="#1e1e1e").pack(fill=tk.X)
+
+def salvar_para_excel(rodada):
+    """
+    Saves a single rodada (round multiplier) to an Excel file for further analysis.
+
+    Parameters:
+    import os
+    file_path = "historico_extraido.xlsx"
+    file_exists = os.path.exists(file_path)
+    df.to_excel(file_path, mode='a', index=False, header=not file_exists)
+    """
+    # Adicione a lógica de anexar no arquivo Excel desejado
+    # Exemplo: adicionar uma linha em "historico_extraido.xlsx"
+    import pandas as pd
+    df = pd.DataFrame([[rodada]], columns=["Multiplicador"])
+    df.to_excel("historico_extraido.xlsx", mode='a', index=False, header=False)
+
+from collections import deque
+rodadas = deque(maxlen=600)
+
+# ...depois de criar o root e antes de mostrar gráficos...
+rodadas.clear()
+rodadas.extend(reversed(obter_ultimas_rodadas(600)))
+atualizar_extrator_rodadas()
+mostrar_grafico_detetive(chart_frame, list(rodadas))
+
+def adicionar_rodada(nova_rodada):
+    if len(rodadas) == rodadas.maxlen:
+        rodada_removida = rodadas[0]
+        salvar_para_excel(rodada_removida)
+    rodadas.append(nova_rodada)
+
+colunas = ("Timestamp", "Bet Amount", "Martingale Level", "Outcome", "Profit/Loss", "Multiplicador")
+tree = ttk.Treeview(historico_frame, columns=colunas, show="headings", height=10)
+tree.heading("Timestamp", text="Data/Hora")
+tree.heading("Bet Amount", text="Valor Apostado")
+tree.heading("Martingale Level", text="Nível Martingale")
+tree.heading("Outcome", text="Resultado")
+tree.heading("Profit/Loss", text="Lucro/Perda")
+tree.heading("Multiplicador", text="Multiplicador")
+tree.column("Timestamp", width=150, anchor="center")
+tree.column("Bet Amount", width=100, anchor="center")
+tree.column("Martingale Level", width=120, anchor="center")
+tree.column("Outcome", width=100, anchor="center")
+tree.column("Profit/Loss", width=100, anchor="center")
+tree.column("Multiplicador", width=100, anchor="center")
+
+scroll_y = ttk.Scrollbar(historico_frame, orient="vertical", command=tree.yview)
+scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+tree.configure(yscrollcommand=scroll_y.set)
+tree.pack(fill=tk.BOTH, expand=True)
+
+tree.tag_configure("oddrow", background="#2e2e2e")
+tree.tag_configure("evenrow", background="#3e3e3e")
+
+def tree_scroll(event):
+    if event.delta > 0:
+        tree.yview_scroll(-1, "units")
+    else:
+        tree.yview_scroll(1, "units")
+    return "break"
+
+tree.bind("<MouseWheel>", tree_scroll)
+
+def atualizar_tabela_historico(timestamp, aposta, martingale, outcome, profit_loss, multiplicador):
+    global historico_entradas
+    entrada = {
+        "timestamp": timestamp,
+        "aposta": f"Kz {aposta:.2f}",
+        "martingale": f"{martingale} ({'Base' if martingale == 0 else 'x' + str(2**martingale)})",
+        "outcome": outcome,
+        "profit_loss": f"{'+' if profit_loss >= 0 else ''}Kz {abs(profit_loss):.2f}",
+        "multiplicador": f"{multiplicador:.2f}x"
+    }
+    historico_entradas.insert(0, entrada)
+    if len(historico_entradas) > 100:
+        historico_entradas.pop()
+    for item in tree.get_children():
+        tree.delete(item)
+    for idx, entrada in enumerate(historico_entradas):
+        tag = "evenrow" if idx % 2 == 0 else "oddrow"
+        tree.insert("", tk.END, values=(
+            entrada["timestamp"],
+            entrada["aposta"],
+            entrada["martingale"],
+            entrada["outcome"],
+            entrada["profit_loss"],
+            entrada["multiplicador"]
+        ), tags=(tag,))
+    print(f"📝 Histórico atualizado: {entrada}")
+
+def get_color(multiplicador):
+    if multiplicador >= 10.0:
+        return "#FF69B4"
+    elif multiplicador >= 2.0:
+        return "#800080"
+    else:
+        return "#87CEEB"
+
+def atualizar_extrator_rodadas():
+    for row in range(200):
+        for col in range(6):
+            idx = row * 6 + col
+            if idx < len(rodadas):
+                multiplicador = rodadas[idx]
+                rodadas_labels[row][col].config(text=f"{multiplicador:.2f}x", bg=get_color(multiplicador), fg="white")
+            else:
+                rodadas_labels[row][col].config(text="N/A", bg="#2e2e2e", fg="white")
+
+def atualizar_status():
+    global casas_passadas, detectou_rosa, ultima_vela_rosa, martingale_count_1, martingale_count_2, ultimo_resultado, lucro_acumulado, perdas_acumuladas, saldo, rodadas, rodadas_apos_rosa
+    try:
+        if not detectou_rosa:
+            status_label.config(text="Aguardando vela rosa (>= 10.0x) na 1ª posição")
+        elif casas_passadas < 4:
+            status_label.config(text=f"{casas_passadas + 1}ª casa após rosa ({ultima_vela_rosa:.2f}x)")
+        elif casas_passadas == 4:
+            status_label.config(text="Entrando na 5ª casa após rosa")
+        else:
+            status_label.config(text=f"Tentativa de Martingale na {casas_passadas + 1}ª casa após rosa")
+        martingale_label.config(text=f"Martingale 1: {martingale_count_1} | Martingale 2: {martingale_count_2}")
+        resultado_label.config(text=f"Última Entrada: {ultimo_resultado}")
+        total_gains_label.config(text=f"Total de Ganhos Operacionais: Kz {lucro_acumulado - perdas_acumuladas:.2f}")
+
+        tendencia, cor = analisar_tendencia(rodadas)
+        tendencia_label.config(text=f"Tendência: {tendencia}", fg=cor)
+
+        distancia, intervalo_medio, probabilidade = analisar_velas_rosa(rodadas)
+        velas_rosa_label.config(text=f"Última Vela Rosa: {distancia} rodadas atrás | Média: {intervalo_medio:.1f} rodadas | Probabilidade: {probabilidade}")
+
+        if detectou_rosa and ultima_vela_rosa:
+            relatorio = f"Relatório: Última Vela Rosa detectada: {ultima_vela_rosa:.2f}x\n"
+            if rodadas_apos_rosa:
+                for i in range(len(rodadas_apos_rosa)):
+                    relatorio += f"{i + 1}ª casa após o rosa: {rodadas_apos_rosa[i]:.2f}x\n"
+            relatorio_label.config(text=relatorio)
+        else:
+            relatorio_label.config(text="Relatório: Aguardando vela rosa...")
+
+        if historico_martingale:
+            mg_text = "Histórico de Martingale:\n" + "\n".join(historico_martingale[-5:])
+            historico_mg_label.config(text=mg_text)
+        else:
+            historico_mg_label.config(text="Histórico de Martingale: Nenhum")
+
+        new_saldo = obter_saldo()
+        if new_saldo != "N/A":
+            saldo = new_saldo
+        for period in stats_labels:
+            frame, stats_label = stats_labels.get(period, (None, None))
+            if frame and stats_label:
+                root.after(0, lambda p=period, f=frame, s=stats_label: update_stats(p, f, s))
+                top_label = frame.winfo_children()[0]
+                top_label.config(text=f"Saldo: {saldo} | Total de Ganhos Operacionais: Kz {lucro_acumulado - perdas_acumuladas:.2f}")
+            else:
+                print(f"⚠️ Frame ou stats_label inválido para {period}")
+    except Exception as e:
+        print(f"❌ Erro em atualizar_status: {e}")
+    root.after(1000, atualizar_status)
+
+def configurar_cashout_automatico():
+    try:
+        print("📢 Ativando cashout automático para a 1ª aposta...")
+        auto_button_1 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_button_1))
+        )
+        auto_button_1.click()
+        print("✅ Botão de cashout automático da 1ª aposta clicado.")
+
+        auto_switch_1 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_switch_1))
+        )
+        driver.execute_script("arguments[0].click();", auto_switch_1)
+        print("✅ Switch de cashout automático da 1ª aposta ativado.")
+
+        auto_input_1 = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, auto_cashout_input_1))
+        )
+        auto_input_1.send_keys(Keys.CONTROL + "a")
+        auto_input_1.send_keys(Keys.DELETE)
+        auto_input_1.send_keys("1.49")
+        print("✅ Valor de cashout automático da 1ª aposta definido para 1.49x.")
+
+        print("📢 Ativando cashout automático para a 2ª aposta...")
+        auto_button_2 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_button_2))
+        )
+        driver.execute_script("arguments[0].click();", auto_button_2)
+        print("✅ Botão de cashout automático da 2ª aposta clicado.")
+
+        auto_switch_2 = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, auto_cashout_switch_2))
+        )
+        driver.execute_script("arguments[0].click();", auto_switch_2)
+        print("✅ Switch de cashout automático da 2ª aposta ativado.")
+
+        auto_input_2 = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, auto_cashout_input_2))
+        )
+        auto_input_2.send_keys(Keys.CONTROL + "a")
+        auto_input_2.send_keys(Keys.DELETE)
+        auto_input_2.send_keys("1.90")
+        print("✅ Valor de cashout automático da 2ª aposta definido para 1.90x.")
+    except Exception as e:
+        print(f"❌ Erro ao configurar cashout automático: {e}")
+
+def apostar_com_base_na_banca(martingale_count, aposta_idx):
+    global saldo, base_bet_percentage_1, base_bet_percentage_2
+    try:
+        if saldo == "N/A":
+            raise Exception("Não foi possível obter o saldo")
+        saldo_clean = saldo.replace('Kz', '').replace('AOA', '').replace(',', '.').strip()
+        saldo_float = float(saldo_clean)
+        base_percentage = base_bet_percentage_1 if aposta_idx == 1 else base_bet_percentage_2
+        aposta = saldo_float * base_percentage * (2 ** martingale_count)
+        print(f"💰 Aposta {aposta_idx} calculada: Kz {aposta:.2f} (Martingale nível {martingale_count}, {base_percentage * 100 * (2 ** martingale_count)}% do saldo)")
+
+        input_aposta = WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, f'app-bet-control:nth-child({aposta_idx}) div.bet-block input')))
+        input_aposta.send_keys(Keys.CONTROL + "a")
+        input_aposta.send_keys(Keys.DELETE)
+        time.sleep(0.5)
+        input_aposta.send_keys(str(aposta))
+
+        print(f"Valor da aposta {aposta_idx} definido: {aposta}")
+        return aposta
+    except Exception as e:
+        print(f"❌ Erro ao calcular/configurar aposta {aposta_idx}: {e}")
+        return None
+
+def clicar_botao(xpath):
+    try:
+        botao = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+        if botao.is_enabled():
+            botao.click()
+            print(f"✅ Clicou no botão {xpath}")
+            return True
+        else:
+            print(f"❌ Botão {xpath} está desabilitado")
+            return False
+    except Exception as e:
+        print(f"❌ Erro ao clicar no botão {xpath}: {e}")
+        return False
+
+def pegar_historico_real():
+    try:
+        texto_historico = driver.find_element(By.CLASS_NAME, 'result-history').text
+        if "Histórico da ronda" in texto_historico:
+            linhas = texto_historico.split('\n')
+            resultados = []
+            for linha in linhas:
+                if linha.strip() and "Histórico da ronda" not in linha:
+                    try:
+                        valor = float(linha.replace(',', '').replace('x', ''))
+                        resultados.append(valor)
+                    except ValueError:
+                        continue
+            return resultados if resultados else []
+        else:
+            resultados = [float(n.replace(',', '').replace('x', '')) for n in texto_historico.split('\n') if n.strip()]
+            return resultados
+    except Exception as e:
+        print(f"❌ Erro ao capturar histórico: {e}")
+        return []
+
+def verificar_resultado(aposta, cashout):
+    try:
+        ultimo_resultado = pegar_historico_real()[0]
+        print(f"📊 Último multiplicador: {ultimo_resultado}x")
+        return ultimo_resultado >= cashout, ultimo_resultado
+    except Exception as e:
+        print(f"❌ Erro ao verificar resultado: {e}")
+        return False, 0.0
+
+def resetar_estrategia():
+    global detectou_rosa, casas_passadas, ultima_vela_rosa, martingale_count_1, martingale_count_2, rodadas_apos_rosa, historico_martingale
+    detectou_rosa = False
+    casas_passadas = 0
+    ultima_vela_rosa = 0.0
+    martingale_count_1 = 0
+    martingale_count_2 = 0
+    rodadas_apos_rosa = []
+    historico_martingale = []
+    print("🔄 Estratégia reiniciada. Aguardando próxima vela rosa...")
+
+def realizar_aposta(aposta_idx, martingale_count, botao_xpath, cashout):
+    aposta = apostar_com_base_na_banca(martingale_count, aposta_idx)
+    if aposta is None:
+        return False, 0.0, aposta
+    if clicar_botao(botao_xpath):
+        time.sleep(5)  # Tempo para o jogo processar a aposta
+        resultado, multiplicador = verificar_resultado(aposta, cashout)
+        return resultado, multiplicador, aposta
+    return False, 0.0, aposta
+
+def estrategia_principal():
+    global casas_passadas, detectou_rosa, ultima_vela_rosa, martingale_count_1, martingale_count_2, ultimo_resultado, vitorias, derrotas, lucro_acumulado, perdas_acumuladas, saldo, rodadas, rodadas_apos_rosa, historico_martingale
+
+    configurar_cashout_automatico()
+
+    while True:
+        historico = pegar_historico_real()
+        if not historico or len(historico) < 5:
+            print("⚠️ Histórico insuficiente ou não capturado")
+            time.sleep(2)
+            continue
+        print(f"📈 Histórico atual: {historico}")
+        rodadas = historico
+
+        if detectou_rosa and casas_passadas >= 4:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            total_perda = 0.0
+
+            try:
+                saldo_clean = saldo.replace('Kz', '').replace('AOA', '').replace(',', '.').strip()
+                saldo_float = float(saldo_clean)
+            except:
+                saldo_float = 0.0
+
+            aposta1 = None
+            aposta2 = None
+            if martingale_count_1 < limite_martingale:
+                aposta1 = apostar_com_base_na_banca(martingale_count_1, 1)
+            if martingale_count_2 < limite_martingale:
+                aposta2 = apostar_com_base_na_banca(martingale_count_2, 2)
+
+            if aposta1 is not None and aposta2 is not None:
+                print(f"🎯 {casas_passadas + 1}ª casa chegou! Fazendo entradas simultâneas...")
+                threads = []
+                t1 = threading.Thread(target=lambda: clicar_botao(botao1_xpath))
+                t2 = threading.Thread(target=lambda: clicar_botao(botao2_xpath))
+                threads.append(t1)
+                threads.append(t2)
+                t1.start()
+                t2.start()
+                for t in threads:
+                    t.join()
+
+                time.sleep(5)
+
+                resultado1, multiplicador1 = verificar_resultado(aposta1, 1.49)
+                resultado2, multiplicador2 = verificar_resultado(aposta2, 1.90)
+
+                if aposta1 is not None:
+                    if resultado1:
+                        vitorias += 1
+                        lucro = aposta1 * (1.49 - 1)
+                        lucro_acumulado += lucro
+                        ultimo_resultado = f"Vitória (+Kz {lucro:.2f})"
+                        print(f"🏆 Vitória na 1ª aposta! Lucro: Kz {lucro:.2f}.")
+                        salvar_entrada(aposta1, martingale_count_1, "Vitória", lucro, multiplicador1)
+                        martingale_count_1 = limite_martingale
+                    else:
+                        total_perda += aposta1
+                        historico_martingale.append(f"1ª aposta (tentativa {martingale_count_1 + 1}): Falha - Kz {aposta1:.2f}")
+                        print(f"⚡ 1ª aposta falhou (tentativa {martingale_count_1 + 1}).")
+                        martingale_count_1 += 1
+
+                if aposta2 is not None:
+                    if resultado2:
+                        vitorias += 1
+                        lucro = aposta2 * (1.90 - 1)
+                        lucro_acumulado += lucro
+                        ultimo_resultado = f"Vitória (+Kz {lucro:.2f})"
+                        print(f"🏆 Vitória na 2ª aposta! Lucro: Kz {lucro:.2f}.")
+                        salvar_entrada(aposta2, martingale_count_2, "Vitória", lucro, multiplicador2)
+                        martingale_count_2 = limite_martingale
+                    else:
+                        total_perda += aposta2
+                        historico_martingale.append(f"2ª aposta (tentativa {martingale_count_2 + 1}): Falha - Kz {aposta2:.2f}")
+                        print(f"⚡ 2ª aposta falhou (tentativa {martingale_count_2 + 1}).")
+                        martingale_count_2 += 1
+
+                if martingale_count_1 >= limite_martingale and martingale_count_2 >= limite_martingale:
+                    if total_perda > 0 and not (resultado1 and resultado2):
+                        derrotas += 1
+                        perdas_acumuladas += total_perda
+                        ultimo_resultado = f"Derrota (-Kz {total_perda:.2f})"
+                        print(f"💀 Derrota nas apostas após todas as tentativas de MG. Perda total: Kz {total_perda:.2f}.")
+                        mt_ref = max(martingale_count_1, martingale_count_2)
+                        mult_ref = max(multiplicador1, multiplicador2) if multiplicador1 > 0 or multiplicador2 > 0 else 0
+                        salvar_entrada(max(aposta1, aposta2) if aposta1 or aposta2 else 0, mt_ref, "Derrota", -total_perda, mult_ref)
+                    resetar_estrategia()
+                    apostar_com_base_na_banca(0, 1)
+                    apostar_com_base_na_banca(0, 2)
+                    continue
+
+        time.sleep(1)
+
+primeira_extracao = True
+executando = False
+
+def rodada_terminou():
+    global ultimo_multiplicador_processado
+    try:
+        texto_resultado = driver.find_element(By.CLASS_NAME, 'result-history').text.replace('x', '').split('\n')[0]
+        resultado_atual = float(texto_resultado.replace(',', ''))
+        if ultimo_multiplicador_processado is None or resultado_atual != ultimo_multiplicador_processado:
+            return True
+        return False
+    except:
+        return False
+
+MAX_CELULAS = 600
+# rodadas = []  # Sua lista global
+
+def adicionar_rodada(nova_rodada):
+    global rodadas
+    rodadas.append(nova_rodada)
+    if len(rodadas) > MAX_CELULAS:
+        rodada_removida = rodadas.pop(0)  # Remove a primeira (mais antiga)
+        #salvar_para_excel(rodada_removida)  # Função que trata o envio para Excel/análise
+
+    if nova_rodada >= 10.0:
+        print(f"🔥 Nova vela rosa detectada na 1ª posição: {nova_rodada:.2f}x! Reiniciando contagem...")
+        ultima_vela_rosa = nova_rodada
+        detectou_rosa = True
+        casas_passadas = 0
+        rodadas_apos_rosa = []
+        historico_martingale = []
+    elif detectou_rosa:
+        rodadas_apos_rosa.append(nova_rodada)
+        casas_passadas = len(rodadas_apos_rosa)
+        print(f"⏳ {casas_passadas} nova(s) vela(s) após rosa ({ultima_vela_rosa:.2f}x): {nova_rodada:.2f}x")
+
+    ultimo_multiplicador_processado = nova_rodada
+    salvar_rodada(nova_rodada)
+    atualizar_extrator_rodadas()
+    if len(rodadas) >= 5 and len(rodadas) % 5 == 0:
+        mostrar_grafico_detetive(chart_frame, rodadas)
+
+def extrair_rodadas():
+    global primeira_extracao, executando
+    if executando:
+        return
+    executando = True
+    try:
+        if rodada_terminou():
+            resultados = [float(n.replace(',', '')) for n in driver.find_element(By.CLASS_NAME, 'result-history').text.replace('x', '').split('\n') if n.strip()]
+            if resultados:
+                nova_rodada = resultados[0]
+                if primeira_extracao:
+                    rodadas.extend(resultados)
+                    primeira_extracao = False
+                    if len(rodadas) >= 5:
+                        mostrar_grafico_detetive(chart_frame, rodadas)
+                else:
+                    adicionar_rodada(nova_rodada)
+    except Exception as e:
+        print(f"Erro ao extrair rodadas: {e}")
+    executando = False
+    root.after(1000, extrair_rodadas)
+
+def main():
+    print("📢 Iniciando o bot...")
+    try:
+        configurar_navegacao()
+        extrair_rodadas()
+        atualizar_status()
+        estrategia_thread = threading.Thread(target=estrategia_principal, daemon=True)
+        estrategia_thread.start()
+        root.mainloop()
+    except Exception as e:
+        print(f"❌ Erro crítico no main: {e}")
+        if driver:
+            driver.quit()
+        exit(1)
+    finally:
+        print("📢 Encerrando o driver do Selenium...")
+        if driver:
+            driver.quit()
+
+if __name__ == "__main__":
+    main()
